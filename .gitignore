@@ -1,0 +1,9 @@
+target/
+
+# Mai nel repository: chiavi, variabili d'ambiente, colloqui registrati.
+*.key
+.env
+.env.*
+sessioni/
+/*.ogg
+/audio/

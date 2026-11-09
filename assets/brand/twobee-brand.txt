@@ -1,0 +1,43 @@
+========================================
+TWOBEE — COLORI E FONT DEL SITO
+========================================
+
+----------------------------------------
+COLORI
+----------------------------------------
+
+GIALLO BRAND (principale)
+  Default ......... #FFC501   (CTA, accenti, esagoni)
+  Light ........... #FFE27A
+  Dark / hover .... #E0A800
+
+NERI / SCURI
+  Nero brand ...... #0B0B0C   (sfondo scuro / testo)
+  Dark ............ #111113   (superfici scure secondarie)
+
+CHIARI
+  Off-white ....... #FBFAF9   (sfondo chiaro / testo su scuro)
+  Bianco puro ..... #FFFFFF
+
+Nota: il sito usa un tema che transiziona tra chiaro e scuro
+tramite color-mix, interpolando tra #0B0B0C e #FFFFFF.
+L'accento degli esagoni resta sempre #FFC501.
+
+
+----------------------------------------
+FONT
+----------------------------------------
+
+TITOLI (display)
+  League Spartan   — weight 800 sui titoli
+  Fallback: Inter, system-ui, sans-serif
+
+TESTO (body)
+  Inter            — default per il testo corrente
+  Fallback: system-ui, sans-serif
+
+Pesi caricati (Google Fonts): 300, 400, 500, 600, 700, 800, 900
+
+Dichiarazioni CSS:
+  font-family: 'League Spartan', 'Inter', system-ui, sans-serif;  /* titoli */
+  font-family: 'Inter', system-ui, sans-serif;                    /* testo  */
