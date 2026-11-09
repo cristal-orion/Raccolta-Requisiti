@@ -60,7 +60,13 @@ Gemini; agente tramite la CLI di OpenAI Codex.
 cargo build --release      # la prima volta ci vogliono alcuni minuti
 ./avvia.sh                 # menu dei colloqui (o un colloquio nuovo se non ce ne sono)
 ./avvia.sh --riprendi      # riapre l'ultimo colloquio salvato
+./avvia.sh --installa      # aggiunge «Raccolta requisiti» al menu delle applicazioni
 ```
+
+Dal menu delle applicazioni l'app parte senza terminale. Se il codice è più recente del programma
+(per esempio dopo un `git pull`), `avvia.sh` lo ricompila da solo e lo dice con una notifica. Se
+l'app è già aperta non ne apre una seconda, perché due finestre sullo stesso colloquio si
+sovrascriverebbero.
 
 `RR_SESSION=/percorso/della/sessione ./target/release/raccolta-requisiti` apre un colloquio
 preciso.
