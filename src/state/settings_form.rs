@@ -1,11 +1,111 @@
 //! Il pannello delle impostazioni: una bozza delle scelte che diventa effettiva con «Salva».
 //! «Annulla» o la chiusura la buttano.
 
-use rune::TextEdit;
+use std::time::{Duration, Instant};
+
+use rune::{Color, Live, TextEdit};
 
 use super::State;
+use crate::meter::LevelMeter;
 use crate::settings::{self, AudioSource, KeySource, Settings};
 use crate::transcribe::Check;
+
+/// La barra del livello del microfono nel pannello (larghezza utile del pannello).
+pub const LEVEL_W: f32 = 528.0;
+pub const LEVEL_H: f32 = 10.0;
+/// Mentre si trascina il cursore del volume, al sistema arriva al massimo un valore ogni tanto.
+const VOLUME_EVERY: Duration = Duration::from_millis(80);
+
+/// Il microfono nel pannello: il suo volume d'ingresso e il livello dal vivo.
+pub struct MicPanel {
+    /// Il volume d'ingresso del microfono scelto, in percento (se PipeWire lo dice).
+    pub volume: Option<u32>,
+    /// I volumi com'erano prima di toccarli, per riportarli indietro con «Annulla».
+    originals: Vec<(String, u32)>,
+    pending: Option<(String, u32)>,
+    last_apply: Option<Instant>,
+    pub level_rect: Live<[f32; 4]>,
+    pub level_color: Live<Color>,
+    meter: Option<LevelMeter>,
+    pub meter_error: Option<String>,
+    pub error: Option<String>,
+    pactl: String,
+    ffmpeg: String,
+}
+
+impl MicPanel {
+    fn new(pactl: &str, ffmpeg: &str) -> MicPanel {
+        MicPanel {
+            volume: None,
+            originals: Vec::new(),
+            pending: None,
+            last_apply: None,
+            level_rect: Live::new([0.0, 0.0, 0.0, LEVEL_H]),
+            level_color: Live::new(crate::meter::zone_color(0.0)),
+            meter: None,
+            meter_error: None,
+            error: None,
+            pactl: pactl.into(),
+            ffmpeg: ffmpeg.into(),
+        }
+    }
+
+    /// Legge il volume di `source` e comincia ad ascoltarla (smette di ascoltare la precedente).
+    fn listen(&mut self, source: &str) {
+        self.meter = None;
+        self.level_rect.set([0.0, 0.0, 0.0, LEVEL_H]);
+        self.volume = settings::source_volume(&self.pactl, source);
+        let input = if source.is_empty() { "default" } else { source };
+        match LevelMeter::start(&self.ffmpeg, input, LEVEL_W, LEVEL_H, self.level_rect.clone(), self.level_color.clone()) {
+            Ok(m) => {
+                self.meter = Some(m);
+                self.meter_error = None;
+            }
+            Err(e) => self.meter_error = Some(format!("non riesco ad ascoltare il microfono: {e}")),
+        }
+    }
+
+    /// Cambia il volume d'ingresso di `source`: si sente subito. Mentre si trascina arriva al
+    /// sistema un valore ogni `VOLUME_EVERY`; `now` lo manda comunque (rilascio, pulsanti).
+    fn set_volume(&mut self, source: &str, pct: u32, now: bool) {
+        let pct = pct.min(settings::VOLUME_MAX);
+        if let Some(before) = self.volume
+            && !self.originals.iter().any(|(s, _)| s == source)
+        {
+            self.originals.push((source.to_string(), before));
+        }
+        self.volume = Some(pct);
+        self.pending = Some((source.to_string(), pct));
+        if now || self.last_apply.is_none_or(|t| t.elapsed() >= VOLUME_EVERY) {
+            self.flush(true);
+        }
+    }
+
+    /// Manda al sistema il volume rimasto in attesa, se è il momento (o subito con `force`).
+    fn flush(&mut self, force: bool) {
+        if !force && self.last_apply.is_some_and(|t| t.elapsed() < VOLUME_EVERY) {
+            return;
+        }
+        if let Some((source, pct)) = self.pending.take() {
+            self.last_apply = Some(Instant::now());
+            self.error = settings::set_source_volume(&self.pactl, &source, pct).err();
+        }
+    }
+
+    /// «Annulla»: i microfoni toccati tornano al volume di prima.
+    fn restore(&mut self) {
+        self.pending = None;
+        for (source, pct) in self.originals.drain(..) {
+            let _ = settings::set_source_volume(&self.pactl, &source, pct);
+        }
+    }
+
+    /// «Salva»: il volume scelto resta (lo ricorda PipeWire).
+    fn keep(&mut self) {
+        self.flush(true);
+        self.originals.clear();
+    }
+}
 
 /// Il menu a tendina aperto nel pannello.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,13 +146,15 @@ pub struct SettingsForm {
     pub check: KeyCheck,
     check_id: u32,
     pub error: Option<String>,
+    /// Volume d'ingresso e livello del microfono scelto.
+    pub mic: MicPanel,
 }
 
 /// Il nome del microfono predefinito come lo mostra il menu.
 pub const DEFAULT_SOURCE_LABEL: &str = "Predefinito di sistema";
 
 impl SettingsForm {
-    fn new(s: &Settings) -> SettingsForm {
+    fn new(s: &Settings, ffmpeg: &str) -> SettingsForm {
         let mut f = SettingsForm {
             agent_model: s.agent_model.clone(),
             agent_effort: s.agent_effort.clone(),
@@ -70,6 +172,7 @@ impl SettingsForm {
             check: KeyCheck::Idle,
             check_id: 0,
             error: None,
+            mic: MicPanel::new("pactl", ffmpeg),
         };
         f.reload_sources();
         f
@@ -173,11 +276,60 @@ impl State {
     }
 
     pub fn open_settings(&mut self) {
-        self.form = Some(SettingsForm::new(&self.settings));
+        let mut f = SettingsForm::new(&self.settings, &self.ffmpeg);
+        let source = f.audio_source.clone();
+        f.mic.listen(&source);
+        self.form = Some(f);
     }
 
+    /// Chiude senza salvare: anche il volume del microfono torna com'era.
     pub fn close_settings(&mut self) {
+        if let Some(f) = &mut self.form {
+            f.mic.restore();
+        }
         self.form = None;
+    }
+
+    /// Sceglie il microfono nel menu e comincia ad ascoltarlo.
+    pub fn choose_source(&mut self, label: &str) {
+        if let Some(f) = &mut self.form {
+            f.choose_source(label);
+            let source = f.audio_source.clone();
+            f.mic.listen(&source);
+        }
+    }
+
+    /// «Aggiorna»: rilegge i microfoni (uno appena collegato) e riascolta quello scelto.
+    pub fn reload_mics(&mut self) {
+        if let Some(f) = &mut self.form {
+            f.reload_sources();
+            let source = f.audio_source.clone();
+            f.mic.listen(&source);
+        }
+    }
+
+    /// Il cursore del volume d'ingresso: `now` per il rilascio e i pulsanti.
+    pub fn set_mic_volume(&mut self, pct: u32, now: bool) {
+        if let Some(f) = &mut self.form {
+            let source = f.audio_source.clone();
+            f.mic.set_volume(&source, pct, now);
+        }
+    }
+
+    /// Toglie il silenzio al microfono scelto.
+    pub fn unmute_mic(&mut self) {
+        if let Some(f) = &mut self.form {
+            let source = f.audio_source.clone();
+            f.mic.error = settings::unmute_source(&f.mic.pactl, &source).err();
+            f.reload_sources();
+        }
+    }
+
+    /// Da `poll`: manda al sistema l'ultimo volume del cursore rimasto in attesa.
+    pub(super) fn flush_mic_volume(&mut self) {
+        if let Some(f) = &mut self.form {
+            f.mic.flush(false);
+        }
     }
 
     pub fn toggle_picker(&mut self, p: Picker) {
@@ -229,6 +381,9 @@ impl State {
             // Con la chiave nuova l'audio in attesa riparte subito.
             self.transcribe_error = None;
             self.tx_retry_at = 0.0;
+        }
+        if let Some(f) = &mut self.form {
+            f.mic.keep();
         }
         self.form = None;
         if source_changed {
@@ -299,7 +454,66 @@ mod tests {
             check: KeyCheck::Idle,
             check_id: 0,
             error: None,
+            mic: MicPanel::new("/bin/false", "/bin/false"),
         }
+    }
+
+    /// Un finto pactl: risponde 47% e scrive su `log` ogni volume che riceve.
+    fn fake_pactl(name: &str) -> (String, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("rr-pactl-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("log.txt");
+        let bin = dir.join("pactl.sh");
+        std::fs::write(&bin, format!("#!/bin/sh\nif [ \"$1\" = get-source-volume ]; then echo 'Volume: front-left: 30840 /  47% / -19.64 dB'; else echo \"$@\" >> \"{}\"; fi\n", log.display())).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (bin.to_string_lossy().into_owned(), log)
+    }
+
+    fn log_lines(log: &std::path::Path) -> Vec<String> {
+        std::fs::read_to_string(log).unwrap_or_default().lines().map(String::from).collect()
+    }
+
+    #[test]
+    fn dragging_the_volume_reaches_the_system_a_few_times_and_the_last_value_always_arrives() {
+        let (pactl, log) = fake_pactl("drag");
+        let mut m = MicPanel::new(&pactl, "/bin/false");
+        m.volume = settings::source_volume(&pactl, "");
+        assert_eq!(m.volume, Some(47));
+        m.set_volume("", 60, false);
+        m.set_volume("", 70, false);
+        m.set_volume("", 80, false);
+        assert_eq!(m.volume, Some(80), "il cursore segue la mano");
+        assert_eq!(log_lines(&log), ["set-source-volume @DEFAULT_SOURCE@ 60%"], "gli altri aspettano il loro turno");
+        std::thread::sleep(VOLUME_EVERY + Duration::from_millis(20));
+        m.flush(false);
+        assert_eq!(log_lines(&log).last().map(String::as_str), Some("set-source-volume @DEFAULT_SOURCE@ 80%"));
+        m.set_volume("", 200, true);
+        assert_eq!(log_lines(&log).last().map(String::as_str), Some("set-source-volume @DEFAULT_SOURCE@ 150%"), "mai oltre il 150%");
+        let _ = std::fs::remove_dir_all(log.parent().unwrap());
+    }
+
+    #[test]
+    fn cancelling_puts_the_volume_back_and_saving_keeps_it() {
+        let (pactl, log) = fake_pactl("undo");
+        let mut s = quiet();
+        let mut f = form();
+        f.mic = MicPanel::new(&pactl, "/bin/false");
+        f.mic.volume = Some(47);
+        s.form = Some(f);
+        s.set_mic_volume(120, true);
+        s.close_settings();
+        assert_eq!(log_lines(&log), ["set-source-volume @DEFAULT_SOURCE@ 120%", "set-source-volume @DEFAULT_SOURCE@ 47%"], "annullato: torna al 47%");
+
+        let mut f = form();
+        f.mic = MicPanel::new(&pactl, "/bin/false");
+        f.mic.volume = Some(47);
+        s.form = Some(f);
+        s.set_mic_volume(130, true);
+        s.save_settings();
+        assert!(s.form.is_none());
+        assert_eq!(log_lines(&log).last().map(String::as_str), Some("set-source-volume @DEFAULT_SOURCE@ 130%"), "salvato: resta al 130%");
+        let _ = std::fs::remove_dir_all(log.parent().unwrap());
     }
 
     fn quiet() -> State {

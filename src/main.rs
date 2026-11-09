@@ -6,6 +6,7 @@ mod audio;
 mod brand;
 mod export;
 mod library;
+mod meter;
 mod model;
 mod settings;
 mod state;

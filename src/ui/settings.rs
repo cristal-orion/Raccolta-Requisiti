@@ -5,7 +5,8 @@ use rune::{El, ScrollSpec, col, el, row, text};
 use rune_kit::{Button, ButtonVariant, Dialog, Kit, SegmentedControl, Select, SelectAppearance, Switch, TextInput};
 
 use crate::settings::{EFFORTS, KeySource};
-use crate::state::{KeyCheck, Picker, Rec, SettingsForm, State};
+use crate::settings::VOLUME_MAX;
+use crate::state::{KeyCheck, LEVEL_H, LEVEL_W, Picker, Rec, SettingsForm, State};
 use crate::ui::board::amber;
 
 const WIDTH: f32 = 560.0;
@@ -146,19 +147,11 @@ fn audio(s: &State, f: &SettingsForm, k: &Kit, dark: bool, layer: &mut Vec<El>) 
         .open(f.picker == Some(Picker::Source))
         .on_toggle(|s: &mut State| s.toggle_picker(Picker::Source))
         .on_close(|s: &mut State| s.close_picker())
-        .on_choose(|s: &mut State, v: &str, _| {
-            if let Some(f) = &mut s.form {
-                f.choose_source(v);
-            }
-        })
+        .on_choose(|s: &mut State, v: &str, _| s.choose_source(v))
         .build(k, layer);
     let reload = Button::new("Aggiorna")
         .variant(ButtonVariant::Outline)
-        .on_press(|s: &mut State| {
-            if let Some(f) = &mut s.form {
-                f.reload_sources();
-            }
-        })
+        .on_press(|s: &mut State| s.reload_mics())
         .build(k)
         .key("set-source-reload")
         .w(96.0);
@@ -167,14 +160,71 @@ fn audio(s: &State, f: &SettingsForm, k: &Kit, dark: bool, layer: &mut Vec<El>) 
         out = out.child(note(format!("{e}: resta il microfono predefinito."), amber()));
     }
     if f.chosen_source_muted() {
-        out = out.child(note("Questo microfono è silenziato nel sistema: registrerebbe silenzio.", amber()));
+        out = out.child(
+            row().w_full().gap(space::S2).center_y()
+                .child(note("Questo microfono è silenziato nel sistema: registrerebbe silenzio.", amber()).grow(1.0).min_w(0.0))
+                .child(Button::new("Riattiva").variant(ButtonVariant::Outline).on_press(|s: &mut State| s.unmute_mic()).build(k).key("set-unmute")),
+        );
     }
+    out = out.child(field("Volume in ingresso", volume_row(f, k, dark), dark)).child(level_bar(f, dark));
+    if let Some(e) = f.mic.error.as_ref().or(f.mic.meter_error.as_ref()) {
+        out = out.child(note(e.clone(), amber()));
+    }
+    out = out.child(note("Parla con voce normale: la barra deve stare nel verde e arrivare al giallo sui picchi; se va sul rosso, abbassa. È il volume del sistema: vale anche per le altre app. «Annulla» lo riporta com'era.", t.text_secondary));
     let tip = if s.rec == Rec::Live {
         "Collegato un microfono esterno? Premi «Aggiorna». Il cambio vale subito: la registrazione prosegue dal nuovo microfono."
     } else {
         "Collegato un microfono esterno? Premi «Aggiorna» e sceglilo. Se manca quando registri, si usa il predefinito."
     };
     out.child(note(tip, t.text_secondary))
+}
+
+const VOLUME_W: f32 = INNER - 2.0 * 36.0 - 56.0 - 3.0 * space::S2;
+const KNOB: f32 = 16.0;
+
+/// Il cursore del volume d'ingresso (0–150%), con − e + a passi del 5%.
+fn volume_row(f: &SettingsForm, k: &Kit, dark: bool) -> El {
+    let t = tok::theme(dark);
+    let accent = tok::accent(0, dark);
+    let pct = f.mic.volume;
+    let frac = pct.map_or(0.0, |p| p as f32 / VOLUME_MAX as f32);
+    let x = frac * (VOLUME_W - KNOB);
+    // La tacca del 100%: oltre, PipeWire amplifica in software.
+    let unity = 100.0 / VOLUME_MAX as f32 * (VOLUME_W - KNOB) + KNOB * 0.5;
+    let slider = el().key("set-volume").role("slider").label("Volume in ingresso").focusable(true).size(VOLUME_W, 24.0).cursor(rune::Cursor::Pointer)
+        .child(el().absolute(0.0, 10.0).size(VOLUME_W, 4.0).radius(2.0).fill(t.control_track))
+        .child(el().absolute(0.0, 10.0).size(x + KNOB * 0.5, 4.0).radius(2.0).fill(accent))
+        .child(el().absolute(unity - 1.0, 5.0).size(2.0, 14.0).radius(1.0).fill(t.text_secondary.alpha(0.6)).inert())
+        .child(el().absolute(x, 4.0).size(KNOB, KNOB).radius(KNOB * 0.5).fill(t.knob).border(1.0, t.card_border))
+        .on_drag(|s: &mut State, d: &mut rune::Drag, _tx: &mut rune::Tx| {
+            if d.w > 0.0 {
+                let frac = ((d.x - KNOB * 0.5) / (d.w - KNOB)).clamp(0.0, 1.0);
+                s.set_mic_volume((frac * VOLUME_MAX as f32).round() as u32, d.phase == rune::Phase::Up);
+            }
+        });
+    let step = move |delta: i32| move |s: &mut State| {
+        let now = s.form.as_ref().and_then(|f| f.mic.volume).unwrap_or(100) as i32;
+        // Al multiplo di 5 più vicino nella direzione del pulsante.
+        let next = if delta > 0 { (now / 5 + 1) * 5 } else { ((now + 4) / 5 - 1) * 5 };
+        s.set_mic_volume(next.clamp(0, VOLUME_MAX as i32) as u32, true);
+    };
+    let label = match pct {
+        Some(p) => format!("{p}%"),
+        None => "—".to_string(),
+    };
+    row().w_full().gap(space::S2).center_y()
+        .child(Button::new("−").variant(ButtonVariant::Outline).disabled(pct.is_none()).on_press(step(-5)).build(k).key("set-volume-down").w(36.0))
+        .child(slider)
+        .child(Button::new("+").variant(ButtonVariant::Outline).disabled(pct.is_none()).on_press(step(5)).build(k).key("set-volume-up").w(36.0))
+        .child(text(label).font(type_::BODY).color(if pct.is_some_and(|p| p > 100) { amber() } else { t.text }).w(56.0))
+}
+
+/// Il livello del microfono dal vivo: la barra la muove il thread che ascolta.
+fn level_bar(f: &SettingsForm, dark: bool) -> El {
+    let t = tok::theme(dark);
+    let track = el().key("set-level").w(LEVEL_W).h(LEVEL_H).radius(LEVEL_H * 0.5).fill(t.control_track)
+        .child(el().absolute(0.0, 0.0).h(LEVEL_H).w(0.0).radius(LEVEL_H * 0.5).live_rect(&f.mic.level_rect).live_fill(&f.mic.level_color).inert());
+    field("Livello del microfono (parla per provarlo)", track, dark)
 }
 
 /// Il pannello, se è aperto: va nello strato sopra l'app. `window_h` è l'altezza della finestra:

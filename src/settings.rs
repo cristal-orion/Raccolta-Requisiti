@@ -202,6 +202,48 @@ pub fn parse_sources(json: &str) -> Result<Vec<AudioSource>, String> {
     Ok(out)
 }
 
+/// Il volume d'ingresso più alto che si può scegliere: oltre il 100% PipeWire amplifica in
+/// software (come fa il pannello audio del sistema fino al 150%).
+pub const VOLUME_MAX: u32 = 150;
+
+/// Il nome da dare a `pactl`: vuoto è il microfono predefinito.
+pub fn pactl_source(name: &str) -> &str {
+    if name.is_empty() { "@DEFAULT_SOURCE@" } else { name }
+}
+
+/// Il volume d'ingresso del microfono, in percento.
+pub fn source_volume(pactl: &str, name: &str) -> Option<u32> {
+    let out = Command::new(pactl).args(["get-source-volume", pactl_source(name)]).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_volume(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// `Volume: front-left: 30840 /  47% / -19.64 dB, …` → 47 (il primo canale).
+pub fn parse_volume(out: &str) -> Option<u32> {
+    let pct = out.split('%').next()?;
+    pct.rsplit(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
+}
+
+/// Imposta il volume d'ingresso del microfono (per tutto il sistema), entro `VOLUME_MAX`.
+pub fn set_source_volume(pactl: &str, name: &str, pct: u32) -> Result<(), String> {
+    let status = Command::new(pactl)
+        .args(["set-source-volume", pactl_source(name), &format!("{}%", pct.min(VOLUME_MAX))])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|e| format!("non riesco a cambiare il volume: {e}"))?;
+    if status.success() { Ok(()) } else { Err("PipeWire non ha accettato il volume".into()) }
+}
+
+/// Toglie il silenzio al microfono.
+pub fn unmute_source(pactl: &str, name: &str) -> Result<(), String> {
+    let status = Command::new(pactl).args(["set-source-mute", pactl_source(name), "0"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().map_err(|e| e.to_string())?;
+    if status.success() { Ok(()) } else { Err("PipeWire non ha tolto il silenzio".into()) }
+}
+
 /// Il microfono predefinito di PipeWire, se lo dice.
 pub fn default_source() -> Option<String> {
     let out = Command::new("pactl").arg("get-default-source").stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
@@ -321,6 +363,16 @@ mod tests {
         assert_eq!(s.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["alsa_input.pci.analog-stereo", "alsa_input.usb-RODE_NT-USB"]);
         assert!(s[1].muted);
         assert!(parse_sources("non json").is_err());
+    }
+
+    #[test]
+    fn the_volume_is_read_from_pactl_output() {
+        let out = "Volume: front-left: 30840 /  47% / -19.64 dB,   front-right: 30840 /  47% / -19.64 dB\n        balance 0.00\n";
+        assert_eq!(parse_volume(out), Some(47));
+        assert_eq!(parse_volume("Volume: mono: 98304 / 150% / 10.57 dB"), Some(150));
+        assert_eq!(parse_volume("niente"), None);
+        assert_eq!(pactl_source(""), "@DEFAULT_SOURCE@");
+        assert_eq!(pactl_source("alsa_input.usb"), "alsa_input.usb");
     }
 
     #[test]

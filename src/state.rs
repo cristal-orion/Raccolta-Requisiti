@@ -21,7 +21,7 @@ pub use areas::Rec;
 use areas::Parked;
 pub use camera::{CANVAS_MARGIN, Zoom};
 pub use home::Home;
-pub use settings_form::{KeyCheck, Picker, SettingsForm};
+pub use settings_form::{KeyCheck, LEVEL_H, LEVEL_W, Picker, SettingsForm};
 use transcript::InFlight;
 
 /// Secondi minimi tra la fine di un giro e l'inizio del successivo, in automatico.
@@ -582,6 +582,7 @@ impl State {
         changed |= self.pump_transcription(now, tx);
         changed |= self.step_glide(now, tx);
         changed |= self.collect_key_check();
+        self.flush_mic_volume();
 
         if self.run_asap && self.can_run() {
             self.start_round();

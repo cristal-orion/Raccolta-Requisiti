@@ -33,7 +33,9 @@ Gemini; agente tramite la CLI di OpenAI Codex.
   giallo. Si risponde dalla lavagna o dalla scheda «Domande»: la risposta va all'agente e la
   domanda sparisce dalla lavagna.
 - **Impostazioni.** Modello, ragionamento e modalità veloce dell'agente; modello, lingua e chiave
-  di Gemini (con una prova della chiave); scelta del microfono, anche esterno.
+  di Gemini (con una prova della chiave); scelta del microfono, anche esterno, con il volume in
+  ingresso (fino al 150%, per dare più guadagno a un microfono debole) e il livello dal vivo per
+  provarlo mentre si parla.
 - **Verbale PDF.** Il modello scrive struttura e analisi; il materiale originale (trascrizione,
   domande, note, allegati, diagrammi) lo inserisce il programma parola per parola. Chromium
   stampa l'HTML in PDF.
@@ -126,7 +128,8 @@ cartella temporanea.
 | `src/audio.rs` | Registrazione con `ffmpeg` dalla sorgente PipeWire scelta |
 | `src/export.rs`, `src/brand.rs` | Verbale HTML/PDF con i colori del brand |
 | `src/library.rs` | Elenco dei colloqui salvati per il menu |
-| `src/settings.rs` | Impostazioni, chiave, microfoni, modelli di Codex |
+| `src/settings.rs` | Impostazioni, chiave, microfoni e loro volume, modelli di Codex |
+| `src/meter.rs` | Livello del microfono dal vivo per il pannello delle impostazioni |
 | `src/model.rs` | Dati del colloquio e salvataggio |
 
 ## Componenti di terze parti
